@@ -1,0 +1,227 @@
+# resources:
+#   repositories:
+#   - repository: Automation_Karate_Framework
+#     type: git
+#     name: nqdc-taxapi/Automation_Karate_Framework
+#     ref: main
+#     trigger:
+#     - main
+    
+trigger:
+- none
+
+parameters:
+- name: environment
+  type: string
+  default: dev
+  values:
+  - dev
+  - prod
+  
+  
+
+variables:
+- group: '${{ parameters.environment }}' 
+
+stages:
+- stage: Build
+  displayName: Build Stage
+  jobs:
+  - job: Build
+    displayName: Build Job
+    pool: 'ubuntu-latest'
+
+    # steps:
+    # - checkout: self  # This checks out the primary repository
+    # #  path: $(Build.SourcesDirectory)/tax-api-app
+    #   persistCredentials: true
+    
+    # - checkout: git://nqdc-taxapi/Automation_Karate_Framework
+    #   persistCredentials: true
+    # - task: DownloadSecureFile@1
+    #   displayName: 'Download setting.xml'
+    #   inputs:
+    #     secureFile: 'settings.xml'
+
+    # - task: Maven@4
+    #   inputs:
+    #     mavenPomFile: 'pom.xml'
+    #     goals: 'clean package -P taxengine'
+    #     options: '-s $(Agent.TempDirectory)/settings.xml'
+    #     publishJUnitResults: false
+    #     #testResultsFiles: '**/surefire-reports/TEST-*.xml'
+    #     javaHomeOption: 'JDKVersion'
+    #     jdkVersionOption: '1.17'
+    #     mavenVersionOption: 'Default'
+    #     mavenAuthenticateFeed: true
+    #     effectivePomSkip: false
+    #     sonarQubeRunAnalysis: false
+    
+
+
+
+
+
+   steps:
+   - task: UseDotNet@2
+     displayName: 'Use .NET Core sdk'
+     inputs:
+       packageType: runtime
+       version: 5.0.x
+       installationPath: '$(Agent.ToolsDirectory)/dotnet '
+
+   - task: DotNetCoreCLI@2
+     displayName: 'dotnet restore'
+     inputs:
+       azureSubscription: '$(SUBSCRIPTION)'
+         command: restore
+         projects: '**/*.csproj'
+
+   - powershell: |
+   
+     dotnet --info
+     
+   
+     dotnet build app/SampleWebApp/SampleWebApp.csproj
+    
+   
+     displayName: 'PowerShell Script'
+
+   - task: DotNetCoreCLI@2
+     displayName: 'dotnet publish'
+     inputs:
+       azureSubscription: '$(SUBSCRIPTION)'
+       command: publish
+
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet build'
+     inputs:
+       azureSubscription: '$(SUBSCRIPTION)'
+       projects: '**/*.csproj'
+     workingDirectory: app/SampleWebApp/SampleWebApp.csproj
+     enabled: false
+  
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '.'
+        Contents: |
+          */deployment.yaml
+          */service.yaml
+
+        TargetFolder: '$(build.artifactstagingdirectory)'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifact: drop'
+      inputs:
+        PathtoPublish: '$(build.artifactstagingdirectory)'
+      condition: succeededOrFailed()
+
+    - task: Docker@2
+      displayName: build
+      inputs:
+        containerRegistry: '$(ACRCONNECTION)'
+        repository: '$(IMAGEREPOSITORY)'
+        command: 'build'
+        Dockerfile: 'app/Dockerfile'
+        tags: |
+          latest
+          $(Build.BuildNumber)
+    
+#     - task: aquasec@1
+#       inputs:
+#         registry: '$(registry)'
+#         imageNameandTag: '$(CONTAINERREGISTRY).azurecr.io/$(IMAGEREPOSITORY):latest'
+#         scantype: 'local'
+
+    - task: Docker@2
+      displayName: Push
+      inputs:
+        containerRegistry: '$(ACRCONNECTION)'
+        repository: '$(IMAGEREPOSITORY)'
+        command: 'push'
+        tags: |
+          latest
+          $(Build.BuildNumber)
+    
+#     # - task: CmdLine@2
+#     #   displayName: DOWNLOAD AND INSTALL AQUASEC TRIVY
+#     #   inputs:
+#     #     script: |
+#     #       sudo apt-get install wget apt-transport-https gnupg lsb-release
+#     #       wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+#     #       echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+#     #       sudo apt-get update
+#     #       sudo apt-get install trivy
+#     #       trivy -v
+#     #       pwd
+          
+#     # - task: CmdLine@2
+#     #   inputs:
+#     #     script: |
+#     #       trivy image --exit-code 0 --severity LOW,MEDIUM $(CONTAINERREGISTRY).azurecr.io/$(IMAGEREPOSITORY):latest > low-med.txt
+#     #       trivy image --exit-code 1 --severity HIGH,CRITICAL $(CONTAINERREGISTRY).azurecr.io/$(IMAGEREPOSITORY):latest > high-critical.txt
+#     #       ls -l
+#     #       cp -rvf *.txt $(target)
+        
+        
+    - task: PublishBuildArtifacts@1
+      displayName: PUBLISH ARTIFACTS
+      inputs:
+        targetPath: '$(target)'
+        artifactName: '$(artifact)'
+    - task: DownloadBuildArtifacts@1
+      displayName: DOWNLOAD ARTIFACTS
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        downloadPath: '$(System.ArtifactsDirectory)'
+
+# - stage: Deploy
+#   displayName: Deploy Stage
+#   dependsOn: Build
+#   jobs:
+#   - deployment: Deploy
+#     displayName: Deploy Job
+#     environment: '${{parameters.environment}}'
+#     pool: 'VMSS_LIINUX_EYGS_01' #'VMSS_WIN_STANDARD_EYGS_01'
+
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+          
+#           - task: DownloadPipelineArtifact@2
+#             inputs:
+#               buildType: 'current'
+#               artifactName: 'drop'
+#               targetPath: '$(Pipeline.Workspace)'
+              
+#           - script: |
+#                  export AKS_SERVICE_CONNECTION='$(KUBERNETESSERVICECONNECTION)'
+#                  export AKS_RESOURCE_GROUP='$(AKS_RESOURCE_GROUP)'
+#                  export AKS_CLUSTER_NAME='$(AKS_CLUSTER_NAME)'
+#                  export NAMESPACE= '$(NAMESPACE)'
+                  
+#             displayName: 'Set Environment Variables'
+
+#           - download: current
+#             artifact: drop
+
+#           - script: |
+#               echo "Setting up kubectl"
+              
+#               az login --service-principal -u $(AZURE_CLIENT_ID) -p $(AZURE_CLIENT_SECRET) --tenant $(AZURE_TENANT_ID)
+#               az account set --subscription $(SUBSCRIPTION)
+#               az aks get-credentials --resource-group '$(AKS_RESOURCE_GROUP)' --name '$(AKS_CLUSTER_NAME)' --overwrite-existing --admin 
+
+#               echo "Updating Kubernetes deployment"
+#               kubectl apply -f $(Pipeline.Workspace)/drop/$(DEPLOYMENT) --namespace=$NAMESPACE 
+#             #  kubectl rollout restart deployment/$(DEPLOYMENT-NAME) --namespace=$NAMESPACE
+
+
+#             displayName: 'Deploy to AKS'
+#             env:
+#               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+#               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+#               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              

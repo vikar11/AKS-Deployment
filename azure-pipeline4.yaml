@@ -1,0 +1,271 @@
+trigger:
+- none
+
+parameters:
+- name: environment
+  type: string
+  default: dev
+  values:
+  - dev
+  - stag
+  - prod
+  - private
+
+variables:
+- group: '${{ parameters.environment }}'
+
+stages:
+- stage: Build
+  displayName: Build Stage
+  jobs:
+  - job: Build
+    displayName: Build Job
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - checkout: self
+
+    - task: UseDotNet@2
+      displayName: 'Install .NET 5.0 Runtime'
+      inputs:
+        packageType: runtime
+        version: 5.0.x
+        installationPath: $(Agent.ToolsDirectory)/dotnet
+
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet restore'
+      inputs:
+        command: restore
+        projects: '**/*.csproj'
+
+    - task: PowerShell@2
+      displayName: 'Show dotnet info and build project'
+      inputs:
+        targetType: 'inline'
+        script: |
+          dotnet --info
+          dotnet build app/SampleWebApp/SampleWebApp.csproj
+
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet publish'
+      inputs:
+        command: publish
+        projects: '**/*.csproj'
+  
+    - task: CopyFiles@2
+      displayName: 'Copy YAML files'
+      inputs:
+        SourceFolder: '.'
+        Contents: |
+          deployment-service-dev.yaml
+          deployment-service-prod.yaml
+          deployment-service-private.yaml
+          deployment-service-stag.yaml
+          internallb.yaml
+          deployment-dev-rb.yaml
+          grafana.yaml
+          metric-config.yaml
+          node-exporter.yaml
+          prometheus.yaml
+          alert-manager.yaml
+          secretproviderclass.yaml
+          secretproviderclassstag.yaml
+      
+        TargetFolder: '$(build.artifactstagingdirectory)'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifact: drop'
+      inputs:
+        PathtoPublish: '$(build.artifactstagingdirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+
+    - task: Docker@2
+      displayName: 'Docker Build'
+      inputs:
+        containerRegistry: '$(ACRCONNECTION)'
+        repository: '$(IMAGEREPOSITORY)'
+        command: 'build'
+        Dockerfile: 'app/Dockerfile'
+        tags: |
+          latest
+          $(Build.BuildNumber)
+
+    - task: CmdLine@2
+      displayName: DOWNLOAD AND INSTALL AQUASEC TRIVY
+      inputs:
+        script: |
+          sudo apt-get install wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install trivy
+          trivy -v
+          pwd
+          
+    - task: CmdLine@2
+      displayName: Trivy task
+      inputs:
+        script: |
+          trivy image --exit-code 0 --severity LOW,MEDIUM $(CONTAINERREGISTRY).azurecr.io/$(IMAGEREPOSITORY):latest > low-med.txt
+          trivy image --exit-code 1 --severity HIGH,CRITICAL $(CONTAINERREGISTRY).azurecr.io/$(IMAGEREPOSITORY):latest > high-critical.txt
+          ls -l
+          cp -rvf *.txt $(scan-results)
+
+
+    - task: Docker@2
+      displayName: 'Docker Push'
+      inputs:
+        containerRegistry: '$(ACRCONNECTION)'
+        repository: '$(IMAGEREPOSITORY)'
+        command: 'push'
+        tags: |
+          latest
+          $(Build.BuildNumber)
+    
+
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Security Scan Artifacts'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: '$(scan-results)'
+        publishLocation: 'Container'
+
+    - task: DownloadBuildArtifacts@1
+      displayName: 'Download Artifacts'
+      inputs:
+        buildType: 'current'
+        artifactName: 'drop'
+        downloadType: 'single'
+        downloadPath: '$(System.ArtifactsDirectory)'
+
+
+
+- stage: Deploy
+  displayName: Deploy Stage
+  dependsOn: Build
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy Job
+    environment: '${{parameters.environment}}'
+    pool: 
+      vmImage: 'ubuntu-latest' #'VMSS_WIN_STANDARD_EYGS_01'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          
+          # - script: |
+          #     echo "Checking if addon is already enabled..."
+          #     # Attempt to disable and re-enable (only if needed)
+          #     az aks disable-addons --addons azure-keyvault-secrets-provider --name aks-alzspokerg-dev-eastus2-001 --resource-group rg-alzspokerg-dev-eastus2-001
+
+          #     az aks enable-addons --addons azure-keyvault-secrets-provider --name aks-alzspokerg-dev-eastus2-001 --resource-group rg-alzspokerg-dev-eastus2-001
+
+          #     echo "Waiting for Secrets Store CSI Driver pods..."
+          #     kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
+          #     # set policy to access secrets in your key vault 
+          #     az keyvault set-policy -n $(KEYVAULT_NAME) — secret-permissions get — spn $(SPN)
+          #     # addSpnToEnvironment: true
+          #   workingDirectory: $(System.DefaultWorkingDirectory)
+          #   displayName: 'Configure Key Vault CSI Provider'
+
+          - script: |
+                 export AKS_SERVICE_CONNECTION='$(KUBERNETESSERVICECONNECTION)'
+                 export AKS_RESOURCE_GROUP='$(AKS_RESOURCE_GROUP)'
+                 export AKS_CLUSTER_NAME='$(AKS_CLUSTER_NAME)'
+                 export NAMESPACE= '$(NAMESPACE)'
+                 
+                  
+          #   displayName: 'Set Environment Variables'
+
+          # - download: current
+          #   artifact: drop
+  
+          # - script: |
+          #     echo "Azure Login"
+          #     az login --service-principal -u $(AZURE_CLIENT_ID) -p $(AZURE_CLIENT_SECRET) --tenant $(AZURE_TENANT_ID) --subscription $(SUBSCRIPTION)
+          #     az account set --subscription $(SUBSCRIPTION)
+
+          #     echo "Setting up kubectl"
+          #     az aks get-credentials --resource-group $(AKS_RESOURCE_GROUP) --name $(AKS_CLUSTER_NAME) --admin --overwrite-existing
+
+          #     # echo "Ensure Namespace Exists"
+          #     # kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+
+          #     echo "Deploying to AKS"
+          #     kubectl apply -f "$(Pipeline.Workspace)/drop/deployment-service.yaml" --namespace dev
+          #     # kubectl apply -f "$(Pipeline.Workspace)/drop/service.yaml" --=dev
+          #     env:
+          #     AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+          #     AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+          #     AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+          #     displayName: 'Deploy to AKS'
+
+          - script: |
+              echo "Logging into Azure"
+              az login --service-principal -u "$(AZURE_CLIENT_ID)" -p "$(AZURE_CLIENT_SECRET)" --tenant "$(AZURE_TENANT_ID)"
+              az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
+
+              echo "Getting AKS credentials"
+              az aks get-credentials --resource-group $(AKS_RESOURCE_GROUP) --name $(AKS_CLUSTER_NAME) --admin
+
+              echo "Deploying to AKS"
+              # kubectl apply -f deployment-service.yaml
+              kubectl apply -f "$(Pipeline.Workspace)/drop/$(DEPLOYMENT)" --namespace $(NAMESPACE)
+
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/internallb.yaml" --namespace $(NAMESPACE)
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/prometheus.yaml" --namespace monitoring
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/node-exporter.yaml" --namespace monitoring
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/alert-manager.yaml" --namespace monitoring
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/metric-config.yaml"
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/grafana.yaml" --namespace monitoring
+
+            displayName: 'Deploy to AKS'
+          
+          - script: |
+              echo "Checking if addon is already enabled..."
+              # Attempt to disable and re-enable (only if needed)
+              az aks disable-addons --addons azure-keyvault-secrets-provider --name $(AKS_CLUSTER_NAME) --resource-group $(AKS_RESOURCE_GROUP)
+
+              az aks enable-addons --addons azure-keyvault-secrets-provider --name $(AKS_CLUSTER_NAME) --resource-group $(AKS_RESOURCE_GROUP)
+
+              echo "Waiting for Secrets Store CSI Driver pods..."
+              kubectl apply -f "$(Pipeline.Workspace)/drop/secretproviderclassstag.yaml" --namespace stag
+              kubectl get secretproviderclass --namespace $(NAMESPACE)
+              kubectl get pods --namespace $(NAMESPACE)
+              kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
+              # set policy to access secrets in your key vault 
+              #az keyvault set-policy -n $(KEYVAULT_NAME) — secret-permissions get — spn $(SPN)
+              # az keyvault set-policy --name kvrgdeveastus2001 --secret-permissions get --spn 19ea85bd-c458-422a-9cbe-473751cddaf2
+              # kubectl apply -f "$(Pipeline.Workspace)/drop/$(DEPLOYMENTKV)" --namespace $(NAMESPACE)
+              # kubectl get secretproviderclass --namespace $(NAMESPACE) 
+              # kubectl get pods --namespace $(NAMESPACE)
+            workingDirectory: $(System.DefaultWorkingDirectory)
+            displayName: 'Configure Key Vault CSI Provider'
+            env:
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+              AKS_RESOURCE_GROUP: $(AKS_RESOURCE_GROUP)
+              AKS_CLUSTER_NAME: $(AKS_CLUSTER_NAME)
+              NAMESPACE: $(NAMESPACE)
+              KEYVAULT_NAME: $(KEYVAULT_NAME)
+
+          # - script: |
+          #     echo "Checking if addon is already enabled..."
+          #     # Attempt to disable and re-enable (only if needed)
+          #     az aks disable-addons --addons azure-keyvault-secrets-provider --name aks-alzspokerg-dev-eastus2-001 --resource-group rg-alzspokerg-dev-eastus2-001
+
+          #     az aks enable-addons --addons azure-keyvault-secrets-provider --name aks-alzspokerg-dev-eastus2-001 --resource-group rg-alzspokerg-dev-eastus2-001
+                
+          #     echo "Waiting for Secrets Store CSI Driver pods..."
+          #     kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
+          #     # set policy to access secrets in your key vault 
+          #     az keyvault set-policy -n $(KEYVAULT_NAME) — secret-permissions get — spn $(SPN)
+          #   workingDirectory: $(System.DefaultWorkingDirectory)
+          #   displayName: 'Configure Key Vault CSI Provider'

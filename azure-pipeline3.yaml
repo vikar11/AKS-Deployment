@@ -1,0 +1,119 @@
+# Deploy to Azure Kubernetes Service
+# Build and push image to Azure Container Registry; Deploy to Azure Kubernetes Service
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- main
+
+resources:
+- repo: self
+
+# variables:
+
+  # Container registry service connection established during pipeline creation
+  # devopsmelacr: 'devopsmelacr'
+# - task: Docker@2
+#   inputs:
+#     containerRegistry: 'devopsmelacr'
+#     repository: '$(imageRepository)'
+#     command: 'build&push'
+#   connection: 'aksconnection'
+#   imageRepository: 'samplewebapp'
+#   containerRegistry: 'devopsmelacr.azurecr.io'
+#   dockerfilePath: '**/Dockerfile'
+#   tag: '$(Build.BuildId)'
+#   imagePullSecret: 'devopsmelacr132827a7-auth'
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    # - task: Docker@2
+    #   displayName: Build and push an image to container registry
+    #   inputs:
+    #     command: build&push
+    #     repository: $(imageRepository)
+    #     dockerfile: $(dockerfilePath)
+    #     containerRegistry: $(devopsmelacr)
+    #     tags: |
+    #       $(tag)
+
+  pool:
+  name: Azure Pipelines
+variables:
+  repository: 'samplewebapp'
+  tags: 'latest'
+
+steps:
+- task: Docker@2
+  displayName: build
+  inputs:
+    containerRegistry: devacr
+    repository: '$(Parameters.repository)'
+    command: build
+    tags: '$(Parameters.tags)'
+
+- task: Docker@2
+  displayName: Push
+  inputs:
+    containerRegistry: devacr
+    repository: '$(Parameters.repository)'
+    command: push
+    tags: '$(Parameters.tags)'
+
+
+    
+- task: CopyFiles@2
+  inputs:
+    SourceFolder: 'manifests/'
+    Contents: '**/*.yml'
+    TargetFolder: '$(Pipeline.Workspace)/manifests'
+    
+- task: PublishPipelineArtifact@1
+  inputs:
+    targetPath: '$(Pipeline.Workspace)/manifests'
+    artifact: 'manifests'
+    publishLocation: 'pipeline'
+
+# - stage: Deploy
+#   displayName: Deploy stage
+#   dependsOn: Build
+
+#   jobs:
+#   - deployment: Deploy
+#     displayName: Deploy
+#     pool:
+#       vmImage: $(vmImageName)
+#     environment: 'samplewebapp-2040'
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+#           - task: KubernetesManifest@0
+#             displayName: Create imagePullSecret
+#             inputs:
+#               action: createSecret
+#               secretName: $(imagePullSecret)
+#               dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+
+#           - task: KubernetesManifest@0
+#             displayName: Deploy to Kubernetes cluster
+#             inputs:
+#               action: deploy
+#               manifests: |
+#                 $(Pipeline.Workspace)/manifests/deployment.yml
+#                 $(Pipeline.Workspace)/manifests/service.yml
+#               imagePullSecrets: |
+#                 $(imagePullSecret)
+#               containers: |
+#                 $(containerRegistry)/$(imageRepository):$(tag)
+
